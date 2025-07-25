@@ -855,94 +855,94 @@ def render_app() -> None:
         if prod_file is not None:
             try:
                 # In the DCA tab, after reading the uploaded CSV file into a DataFrame `df`:
-				df = pd.read_csv(uploaded_file)
-				df['date'] = pd.to_datetime(df['date'])
-				
-				# Compute time since first production in months for each well
-				df.sort_values(['well_id', 'date'], inplace=True)
-				df['t_months'] = (
-				    df.groupby('well_id')['date'].transform(lambda s: (s - s.min()).dt.days / 30.4375)
-				)
-				
-				# Identify all columns that look like rate columns.  By convention we assume they end with '_rate'
-				rate_columns = [col for col in df.columns if col.endswith('_rate')]
-				if not rate_columns:
-				    # Fall back to a single generic 'rate' column if present
-				    if 'rate' in df.columns:
-				        rate_columns = ['rate']
-				    else:
-				        st.error('No rate columns found in the uploaded CSV. Please include columns like oil_rate or gas_rate.')
-				        st.stop()
-				
-				# Ask the user which well and which commodity streams to analyse
-				unique_wells = df['well_id'].unique()
-				selected_well = st.selectbox('Select well for analysis', unique_wells)
-				available_streams = rate_columns
-				selected_streams = st.multiselect(
-				    'Select the streams you want to analyse',
-				    options=available_streams,
-				    default=available_streams  # default to all streams
-				)
-				
-				# Filter the DataFrame for the chosen well
-				well_data = df[df['well_id'] == selected_well].copy()
-				if well_data.empty:
-				    st.warning('No data found for the selected well.')
-				    st.stop()
-				
-				# For each selected stream, fit a decline curve and display results
-				for stream in selected_streams:
-				    q_series = well_data[stream].astype(float)
-				
-				    # Simple 3σ outlier removal (optional)
-				    if st.checkbox(f'Remove outliers for {stream}', value=True):
-				        mean = q_series.mean()
-				        std = q_series.std() if q_series.std() > 0 else 1.0
-				        mask = (np.abs(q_series - mean) <= 3 * std)
-				        well_data_stream = well_data[mask]
-				        q_vals = well_data_stream[stream].values
-				        t_vals = well_data_stream['t_months'].values
-				    else:
-				        well_data_stream = well_data
-				        q_vals = well_data_stream[stream].values
-				        t_vals = well_data_stream['t_months'].values
-				
-				    # Drop zero or negative rates to avoid issues in curve fitting
-				    mask = q_vals > 0
-				    q_vals = q_vals[mask]
-				    t_vals = t_vals[mask]
-				
-				    # Choose the decline model and b‑factor override (as before)
-				    model_choice = st.selectbox(f'Decline model for {stream}', ['Exponential', 'Hyperbolic', 'Harmonic'])
-				    b_override = None
-				    if model_choice == 'Hyperbolic' and st.checkbox(f'Manual b‑factor override for {stream}', value=False):
-				        b_override = st.number_input(f'b‑factor (override) for {stream}', value=0.5, min_value=0.0, max_value=2.0, step=0.1)
-				    min_dt = st.number_input(f'Minimum terminal decline (%) for {stream}', value=5.0, min_value=0.0, max_value=30.0, step=0.5) / 100.0
-				
-				    # Fit the curve using your existing fit_decline_model() helper
-				    if len(q_vals) >= 3:  # need at least 3 points for a meaningful fit
-				        result = fit_decline_model(t_vals, q_vals, model_choice, b_override=b_override, min_terminal_decline=min_dt)
-				        if 'error' in result:
-				            st.error(f"Error fitting curve for {stream}: {result['error']}")
-				        else:
-				            st.markdown(f'#### {stream.replace("_rate","").title()} decline fit')
-				            st.write(f"Initial rate (qᵢ): {result['qi']:.2f}")
-				            st.write(f"Initial decline (Dᵢ): {result['Di']:.4f} per month")
-				            st.write(f"b‑factor: {result['b']:.3f}")
-				            st.write(f"R²: {result['R2']:.3f}")
-				            st.write(f"RMSE: {result['RMSE']:.3f}")
-				
-				            # Plot observed vs fitted for this stream
-				            fig, ax = plt.subplots()
-				            ax.plot(t_vals, q_vals, 'o', label=f'Observed {stream}')
-				            ax.plot(t_vals, result['q_pred'], '-', label=f'Fitted {stream}')
-				            ax.set_xlabel('Time (months)')
-				            ax.set_ylabel(f'Production rate ({stream.split(\"_\")[0]})')
-				            ax.set_title(f'Decline Curve Fit – {stream.replace(\"_rate\",\"\").title()} ({model_choice})')
-				            ax.legend()
-				            st.pyplot(fig)
-				    else:
-				        st.warning(f'Not enough data points to fit a decline curve for {stream}')
+                df = pd.read_csv(uploaded_file)
+                df['date'] = pd.to_datetime(df['date'])
+                
+                # Compute time since first production in months for each well
+                df.sort_values(['well_id', 'date'], inplace=True)
+                df['t_months'] = (
+                    df.groupby('well_id')['date'].transform(lambda s: (s - s.min()).dt.days / 30.4375)
+                )
+                
+                # Identify all columns that look like rate columns.  By convention we assume they end with '_rate'
+                rate_columns = [col for col in df.columns if col.endswith('_rate')]
+                if not rate_columns:
+                    # Fall back to a single generic 'rate' column if present
+                    if 'rate' in df.columns:
+                        rate_columns = ['rate']
+                    else:
+                        st.error('No rate columns found in the uploaded CSV. Please include columns like oil_rate or gas_rate.')
+                        st.stop()
+                
+                # Ask the user which well and which commodity streams to analyse
+                unique_wells = df['well_id'].unique()
+                selected_well = st.selectbox('Select well for analysis', unique_wells)
+                available_streams = rate_columns
+                selected_streams = st.multiselect(
+                    'Select the streams you want to analyse',
+                    options=available_streams,
+                    default=available_streams  # default to all streams
+                )
+                
+                # Filter the DataFrame for the chosen well
+                well_data = df[df['well_id'] == selected_well].copy()
+                if well_data.empty:
+                    st.warning('No data found for the selected well.')
+                    st.stop()
+                
+                # For each selected stream, fit a decline curve and display results
+                for stream in selected_streams:
+                    q_series = well_data[stream].astype(float)
+                
+                    # Simple 3σ outlier removal (optional)
+                    if st.checkbox(f'Remove outliers for {stream}', value=True):
+                        mean = q_series.mean()
+                        std = q_series.std() if q_series.std() > 0 else 1.0
+                        mask = (np.abs(q_series - mean) <= 3 * std)
+                        well_data_stream = well_data[mask]
+                        q_vals = well_data_stream[stream].values
+                        t_vals = well_data_stream['t_months'].values
+                    else:
+                        well_data_stream = well_data
+                        q_vals = well_data_stream[stream].values
+                        t_vals = well_data_stream['t_months'].values
+                
+                    # Drop zero or negative rates to avoid issues in curve fitting
+                    mask = q_vals > 0
+                    q_vals = q_vals[mask]
+                    t_vals = t_vals[mask]
+                
+                    # Choose the decline model and b‑factor override (as before)
+                    model_choice = st.selectbox(f'Decline model for {stream}', ['Exponential', 'Hyperbolic', 'Harmonic'])
+                    b_override = None
+                    if model_choice == 'Hyperbolic' and st.checkbox(f'Manual b‑factor override for {stream}', value=False):
+                        b_override = st.number_input(f'b‑factor (override) for {stream}', value=0.5, min_value=0.0, max_value=2.0, step=0.1)
+                    min_dt = st.number_input(f'Minimum terminal decline (%) for {stream}', value=5.0, min_value=0.0, max_value=30.0, step=0.5) / 100.0
+                
+                    # Fit the curve using your existing fit_decline_model() helper
+                    if len(q_vals) >= 3:  # need at least 3 points for a meaningful fit
+                        result = fit_decline_model(t_vals, q_vals, model_choice, b_override=b_override, min_terminal_decline=min_dt)
+                        if 'error' in result:
+                            st.error(f"Error fitting curve for {stream}: {result['error']}")
+                        else:
+                            st.markdown(f'#### {stream.replace("_rate","").title()} decline fit')
+                            st.write(f"Initial rate (qᵢ): {result['qi']:.2f}")
+                            st.write(f"Initial decline (Dᵢ): {result['Di']:.4f} per month")
+                            st.write(f"b‑factor: {result['b']:.3f}")
+                            st.write(f"R²: {result['R2']:.3f}")
+                            st.write(f"RMSE: {result['RMSE']:.3f}")
+                
+                            # Plot observed vs fitted for this stream
+                            fig, ax = plt.subplots()
+                            ax.plot(t_vals, q_vals, 'o', label=f'Observed {stream}')
+                            ax.plot(t_vals, result['q_pred'], '-', label=f'Fitted {stream}')
+                            ax.set_xlabel('Time (months)')
+                            ax.set_ylabel(f'Production rate ({stream.split(\"_\")[0]})')
+                            ax.set_title(f'Decline Curve Fit – {stream.replace(\"_rate\",\"\").title()} ({model_choice})')
+                            ax.legend()
+                            st.pyplot(fig)
+                    else:
+                        st.warning(f'Not enough data points to fit a decline curve for {stream}')
 
     # -------------------------------------------------------------------------
     # Help & Tutorial Tab
