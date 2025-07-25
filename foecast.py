@@ -937,8 +937,8 @@ def render_app() -> None:
                             ax.plot(t_vals, q_vals, 'o', label=f'Observed {stream}')
                             ax.plot(t_vals, result['q_pred'], '-', label=f'Fitted {stream}')
                             ax.set_xlabel('Time (months)')
-                            ax.set_ylabel(f'Production rate ({stream.split("\_\")[0]})')
-                            ax.set_title(f'Decline Curve Fit – {stream.replace(\"_rate\",\"\").title()} ({model_choice})')
+                            ax.set_ylabel(f'Production rate ({stream.split('\"_\")[0]})')
+                            ax.set_title(f'Decline Curve Fit – {stream.replace('\"_rate\",\"\").title()} ({model_choice})')
                             ax.legend()
                             st.pyplot(fig)
                     else:
