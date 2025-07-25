@@ -925,7 +925,7 @@ def render_app() -> None:
                         if 'error' in result:
                             st.error(f"Error fitting curve for {stream}: {result['error']}")
                         else:
-                            st.markdown(f'#### {stream.replace("_rate","").title()} decline fit')
+                            st.markdown(f'#### {stream.replace('_rate',"").title()} decline fit')
                             st.write(f"Initial rate (qᵢ): {result['qi']:.2f}")
                             st.write(f"Initial decline (Dᵢ): {result['Di']:.4f} per month")
                             st.write(f"b‑factor: {result['b']:.3f}")
