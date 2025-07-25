@@ -936,12 +936,9 @@ def render_app() -> None:
         )
         # Workflow diagram
         st.markdown('### Model Workflow')
-# Resolve the image path relative to this file
-flow_path = Path(__file__).with_name('dcf_flow_diagram.png')
-if flow_path.exists():
-    st.image(str(flow_path), caption='High‑level workflow of the DCF model', use_column_width=True)
-else:
-    st.info('The flow diagram could not be found; please place dcf_flow_diagram.png in the same directory as the app.')
+        # Resolve the image path relative to this file
+        flow_path = Path(__file__).with_name('dcf_flow_diagram.png')
+        st.image(str(flow_path), caption='High‑level workflow of the DCF model', use_column_width=True)
         # Glossary
         st.markdown('### Glossary of Key Terms')
         glossary_items = [
@@ -979,6 +976,7 @@ else:
             'The model fits a decline curve using non‑linear regression, reports qᵢ, Dᵢ and b (if applicable), and computes R² and RMSE to gauge fit quality.\n'
             'Use the plot of observed versus fitted production rates to validate the fit and adjust parameters as needed.'
         )
+        flow_path = Path(__file__).with_name('decline_curve_examples.png')
         st.image(str(flow_path), caption='Example exponential, hyperbolic and harmonic decline curves', use_column_width=True)
         # Downloadable PDF
         st.markdown('### Downloadable Guide')
