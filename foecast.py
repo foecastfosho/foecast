@@ -944,8 +944,8 @@ def render_app() -> None:
                             ax.set_title(f'Decline Curve Fit – {base_name.title()} ({model_choice})')
                             ax.legend()
                             st.pyplot(fig)
-                                else:
-                                    st.warning(f'Not enough data points to fit a decline curve for {stream}')
+                    else:
+                        st.warning(f'Not enough data points to fit a decline curve for {stream}')
 
     # -------------------------------------------------------------------------
     # Help & Tutorial Tab
