@@ -951,11 +951,6 @@ def render_app() -> None:
     # Help & Tutorial Tab
     # -------------------------------------------------------------------------
     with tab_help:
-        """
-        The Help tab provides an overview of how the discounted cash flow model
-        works, defines key terminology, and offers step‑by‑step instructions.
-        A downloadable PDF version of this guide is also available.
-        """
         st.header('Help & Tutorial')
         # Overview section
         st.markdown('### Overview')
