@@ -979,9 +979,10 @@ def render_app() -> None:
         flow_path = Path(__file__).with_name('decline_curve_examples.png')
         st.image(str(flow_path), caption='Example exponential, hyperbolic and harmonic decline curves', use_column_width=True)
         # Downloadable PDF
+        flow_path = Path(__file__).with_name('dcf_help_guide.pdf')
         st.markdown('### Downloadable Guide')
         try:
-            with open('/home/oai/share/dcf_help_guide.pdf', 'rb') as pdf_file:
+            with open(flow_path, 'rb') as pdf_file:
                 pdf_bytes = pdf_file.read()
             st.download_button(
                 label='Download PDF Guide',
