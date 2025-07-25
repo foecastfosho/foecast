@@ -937,14 +937,89 @@ def render_app() -> None:
                 default_index = candidate_cols.index('well_id') if 'well_id' in candidate_cols else 0
                 well_col = st.selectbox('Select the well identifier column', options=candidate_cols, index=default_index)
 
-                # Identify rate columns
-                rate_columns = [col for col in df.columns if col.endswith('_rate')]
+                # Identify production rate columns using flexible header recognition
+                # Define synonyms for each commodity to match common naming conventions
+                synonyms = {
+                    'oil': [
+                        'oil', 'oil prod', 'oil production', 'oil_rate', 'bo', 'bo/d', 'bopd',
+                        'daily oil', 'crude', 'crude oil', 'oilvolume'
+                    ],
+                    'gas': [
+                        'gas', 'gas prod', 'gas production', 'mcf', 'mcfd', 'gasrate', 'gas rate',
+                        'methane', 'dry gas'
+                    ],
+                    'ngl': [
+                        'ngl', 'ngl prod', 'ngl production', 'natural gas liquids', 'condensate',
+                        'c3+', 'y-grade', 'y grade', 'cond'
+                    ],
+                }
+                # Preprocess column names: remove spaces and underscores, convert to lowercase
+                col_processed = {c: c.strip().lower().replace(' ', '').replace('_', '') for c in df.columns}
+                # Consider all columns except date-related and identifier columns as candidates for production rates
+                candidate_cols = [c for c in df.columns if c not in [date_col, 'date_parsed', 'period', well_col]]
+                # Initialize matches dictionary for each commodity
+                matches = {key: [] for key in synonyms}
+                for col in candidate_cols:
+                    col_norm = col_processed[col]
+                    for comm, keys in synonyms.items():
+                        for key in keys:
+                            key_norm = key.replace(' ', '').replace('_', '').lower()
+                            if key_norm and key_norm in col_norm:
+                                matches[comm].append(col)
+                                break  # stop checking further synonyms for this commodity
+                # Offer manual override for mapping if desired
+                advanced_mapping = st.checkbox(
+                    'Advanced Mapping (manually assign production columns)',
+                    value=False,
+                    help='Enable this to manually assign uploaded columns to oil, gas, and NGL rates.'
+                )
+                selected_map = {}
+                if advanced_mapping:
+                    # For each commodity, allow user to pick a column or None
+                    for comm in ['oil', 'gas', 'ngl']:
+                        options = ['None'] + candidate_cols
+                        # Preselect first matched candidate if available
+                        pre_index = 0
+                        if matches[comm]:
+                            first_match = matches[comm][0]
+                            if first_match in options:
+                                pre_index = options.index(first_match)
+                        sel = st.selectbox(
+                            f'Select column for {comm.title()} production',
+                            options,
+                            index=pre_index
+                        )
+                        if sel != 'None':
+                            selected_map[comm] = sel
+                else:
+                    # Automatic mapping: assign columns with a unique candidate; prompt when multiple candidates exist
+                    for comm in ['oil', 'gas', 'ngl']:
+                        cands = list(dict.fromkeys(matches[comm]))
+                        if len(cands) == 1:
+                            selected_map[comm] = cands[0]
+                        elif len(cands) > 1:
+                            sel = st.selectbox(
+                                f'Multiple columns detected for {comm.title()} production; please select one',
+                                ['None'] + cands,
+                                index=1
+                            )
+                            if sel != 'None':
+                                selected_map[comm] = sel
+                # Consolidate selected columns
+                rate_columns = list(dict.fromkeys(selected_map.values()))
+                # Fallback: if no columns selected via synonyms, use conventional naming patterns
                 if not rate_columns:
-                    if 'rate' in df.columns:
-                        rate_columns = ['rate']
-                    else:
-                        st.error('No rate columns found in the uploaded CSV. Please include columns like oil_rate or gas_rate.')
-                        st.stop()
+                    fallback = [c for c in df.columns if c.endswith('_rate')]
+                    if not fallback and 'rate' in df.columns:
+                        fallback = ['rate']
+                    rate_columns = fallback
+                # Display mapping summary to the user
+                for comm, col in selected_map.items():
+                    st.info(f"Mapped '{col}' to {comm.title()} rate")
+                # If no rate columns identified at all, inform the user and stop
+                if not rate_columns:
+                    st.error('No production rate columns were identified. Please rename columns or use Advanced Mapping to assign them.')
+                    st.stop()
 
                 # Aggregate by well and period if needed
                 if aggregate_month:
