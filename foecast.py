@@ -855,7 +855,8 @@ def render_app() -> None:
         if prod_file is not None:
             try:
                 # In the DCA tab, after reading the uploaded CSV file into a DataFrame `df`:
-                df = pd.read_csv(uploaded_file)
+                # Read the uploaded CSV using the correct variable name
+                df = pd.read_csv(prod_file)
                 df['date'] = pd.to_datetime(df['date'])
                 
                 # Compute time since first production in months for each well
@@ -925,7 +926,11 @@ def render_app() -> None:
                         if 'error' in result:
                             st.error(f"Error fitting curve for {stream}: {result['error']}")
                         else:
-                            st.markdown(f'#### {stream.replace('_rate',"").title()} decline fit')
+                            # Clean up the stream name for display.  When using f‑strings,
+                            # avoid nesting quotes that can confuse the parser.  Precompute
+                            # the replacement instead of calling .replace() inside the f‑string.
+                            clean_name = stream.replace('_rate', '')
+                            st.markdown(f'#### {clean_name.title()} decline fit')
                             st.write(f"Initial rate (qᵢ): {result['qi']:.2f}")
                             st.write(f"Initial decline (Dᵢ): {result['Di']:.4f} per month")
                             st.write(f"b‑factor: {result['b']:.3f}")
@@ -944,6 +949,8 @@ def render_app() -> None:
                             st.pyplot(fig)
                     else:
                         st.warning(f'Not enough data points to fit a decline curve for {stream}')
+            except Exception as e:
+                st.error(f'Error processing decline analysis: {e}')
     # -------------------------------------------------------------------------
     # Help & Tutorial Tab
     # -------------------------------------------------------------------------
