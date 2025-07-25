@@ -522,6 +522,60 @@ def fit_decline_model(
     }
 
 
+# -----------------------------------------------------------------------------
+# Date parsing utilities for the Decline Curve Analysis (DCA) module
+# -----------------------------------------------------------------------------
+def auto_parse_date_series(date_series: pd.Series) -> pd.Series:
+    """Attempt to automatically parse a pandas Series of date strings into datetime.
+
+    The function tries several parsing strategies to recognize common
+    formats including MM/DD/YYYY, DD/MM/YYYY, YYYY-MM-DD, and month‑year
+    strings like Jan-24. It also attempts to interpret numeric values as
+    Excel serial date numbers. Any unrecognized values remain as NaT.
+
+    Parameters
+    ----------
+    date_series : pd.Series
+        Series containing raw date values (strings or numbers).
+
+    Returns
+    -------
+    pd.Series
+        Series of datetime64[ns] with the same index as the input.
+    """
+    series_str = date_series.astype(str).str.strip()
+    # Default parsing (year‑first or unambiguous formats)
+    parsed = pd.to_datetime(series_str, errors='coerce', infer_datetime_format=True, dayfirst=False)
+    invalid = parsed.isna()
+    # Try dayfirst parsing for DD/MM/YYYY
+    if invalid.any():
+        parsed_dayfirst = pd.to_datetime(series_str, errors='coerce', dayfirst=True)
+        parsed = parsed.where(~invalid, parsed_dayfirst)
+        invalid = parsed.isna()
+    # Try month‑year abbreviations (e.g., Jan-24)
+    if invalid.any():
+        parsed_my_abbrev = pd.to_datetime(series_str, errors='coerce', format='%b-%y')
+        parsed = parsed.where(~invalid, parsed_my_abbrev)
+        invalid = parsed.isna()
+    # Try full month names with year (e.g., January-24)
+    if invalid.any():
+        parsed_my_full = pd.to_datetime(series_str, errors='coerce', format='%B-%y')
+        parsed = parsed.where(~invalid, parsed_my_full)
+        invalid = parsed.isna()
+    # Attempt Excel serial numbers for numeric strings
+    if invalid.any():
+        for idx in parsed[invalid].index:
+            value = series_str.loc[idx]
+            try:
+                float_val = float(value)
+                if float_val > 59:
+                    excel_days = int(float_val)
+                    parsed.loc[idx] = pd.to_datetime(excel_days, unit='D', origin='1899-12-30')
+            except Exception:
+                pass
+    return parsed
+
+
 def render_app() -> None:
     """Main function to render the Streamlit application."""
     if st is None:
@@ -853,10 +907,176 @@ def render_app() -> None:
         )
         prod_file = st.file_uploader('Upload production data (CSV)', type=['csv'])
         if prod_file is not None:
+            # New DCA logic begins here
+            # Read the uploaded CSV
             try:
-                # In the DCA tab, after reading the uploaded CSV file into a DataFrame `df`:
-                # Read the uploaded CSV using the correct variable name
                 df = pd.read_csv(prod_file)
+            except Exception as ex:
+                st.error(f"Error reading CSV: {ex}")
+                st.stop()
+            # Choose the date column
+            date_candidates = [col for col in df.columns if "date" in col.lower()]
+            if not date_candidates:
+                date_candidates = df.columns.tolist()
+            date_col = st.selectbox(
+                "Select the column containing dates",
+                options=date_candidates,
+                index=0
+            )
+            # Toggle for automatic date conversion
+            auto_convert = st.checkbox(
+                "Auto-convert date formats",
+                value=True,
+                help="Attempt to automatically recognize common date formats such as MM/DD/YYYY, DD/MM/YYYY, YYYY-MM-DD, month-year (Jan-24) or Excel serial numbers."
+            )
+            # Parse dates accordingly
+            if auto_convert:
+                parsed_dates = auto_parse_date_series(df[date_col])
+                unresolved = parsed_dates.isna()
+                if unresolved.any():
+                    st.warning("Some dates could not be recognized automatically. Please select the correct format below.")
+                    date_format_options = {
+                        "MM/DD/YYYY": "%m/%d/%Y",
+                        "DD/MM/YYYY": "%d/%m/%Y",
+                        "YYYY-MM-DD": "%Y-%m-%d",
+                        "Mon-YY (e.g., Jan-24)": "%b-%y",
+                        "Month-YY (e.g., January-24)": "%B-%y",
+                        "Excel serial number": "excel"
+                    }
+                    manual_format = st.selectbox("Select date format for unresolved entries", list(date_format_options.keys()))
+                    parsed_manual = parsed_dates.copy()
+                    if date_format_options[manual_format] == "excel":
+                        for idx in parsed_manual[parsed_manual.isna()].index:
+                            try:
+                                value = float(df.loc[idx, date_col])
+                                if value > 59:
+                                    parsed_manual.loc[idx] = pd.to_datetime(int(value), unit="D", origin="1899-12-30")
+                            except Exception:
+                                pass
+                    else:
+                        fmt = date_format_options[manual_format]
+                        dayfirst = True if fmt.startswith("%d") else False
+                        try:
+                            parsed_manual = pd.to_datetime(df[date_col], errors="coerce", format=fmt, dayfirst=dayfirst)
+                        except Exception:
+                            parsed_manual = pd.to_datetime(df[date_col], errors="coerce", dayfirst=dayfirst)
+                    parsed_dates = parsed_dates.where(~unresolved, parsed_manual)
+            else:
+                st.info("Automatic date conversion disabled. Please choose the date format below:")
+                date_format_options = {
+                    "MM/DD/YYYY": "%m/%d/%Y",
+                    "DD/MM/YYYY": "%d/%m/%Y",
+                    "YYYY-MM-DD": "%Y-%m-%d",
+                    "Mon-YY (e.g., Jan-24)": "%b-%y",
+                    "Month-YY (e.g., January-24)": "%B-%y",
+                    "Excel serial number": "excel"
+                }
+                manual_format = st.selectbox("Select date format", list(date_format_options.keys()))
+                if date_format_options[manual_format] == "excel":
+                    parsed_dates = pd.to_datetime(pd.to_numeric(df[date_col], errors="coerce"), unit="D", origin="1899-12-30")
+                else:
+                    fmt = date_format_options[manual_format]
+                    dayfirst = True if fmt.startswith("%d") else False
+                    parsed_dates = pd.to_datetime(df[date_col], errors="coerce", format=fmt, dayfirst=dayfirst)
+            # Preview parsed dates
+            preview_df = pd.DataFrame({
+                "Original": df[date_col].astype(str).head(10),
+                "Parsed": parsed_dates.dt.strftime("%Y-%m-%d").head(10)
+            })
+            st.markdown("**Date preview (first 10 rows):**")
+            st.dataframe(preview_df)
+            # Validate parsed dates
+            if parsed_dates.isna().all():
+                st.error("All dates are invalid. Please check your date column and format.")
+                st.stop()
+            elif parsed_dates.isna().any():
+                st.warning("Some dates could not be parsed and will be ignored.")
+            # Assign parsed dates and drop invalid rows
+            df["date_parsed"] = parsed_dates
+            df = df.dropna(subset=["date_parsed"]).copy()
+            # Aggregation option for daily data
+            aggregate_monthly = st.checkbox(
+                "Aggregate daily data to monthly totals",
+                value=False,
+                help="If selected, daily production will be summed into monthly totals using the first day of the month."
+            )
+            if aggregate_monthly:
+                df["period"] = df["date_parsed"].dt.to_period("M")
+                rate_cols_temp = [col for col in df.columns if col.endswith("_rate") or col == "rate"]
+                grouped = df.groupby(["well_id", "period"])[rate_cols_temp].sum().reset_index()
+                grouped["date_parsed"] = grouped["period"].dt.to_timestamp()
+                grouped.drop(columns=["period"], inplace=True)
+                df = grouped
+            # Sort and compute time since first production
+            df.sort_values(["well_id", "date_parsed"], inplace=True)
+            df["t_months"] = df.groupby("well_id")["date_parsed"].transform(lambda s: (s - s.min()).dt.days / 30.4375)
+            # Identify rate columns
+            rate_columns = [col for col in df.columns if col.endswith("_rate")]
+            if not rate_columns and "rate" in df.columns:
+                rate_columns = ["rate"]
+            if not rate_columns:
+                st.error("No rate columns found in the uploaded CSV. Please include columns like oil_rate or gas_rate, or a generic rate column.")
+                st.stop()
+            # Select well and streams
+            unique_wells = df["well_id"].unique()
+            selected_well = st.selectbox("Select well for analysis", unique_wells)
+            selected_streams = st.multiselect(
+                "Select the streams you want to analyse",
+                options=rate_columns,
+                default=rate_columns
+            )
+            well_data = df[df["well_id"] == selected_well].copy()
+            if well_data.empty:
+                st.warning("No data found for the selected well.")
+                st.stop()
+            # Fit decline curves for each selected stream
+            for stream in selected_streams:
+                q_series = well_data[stream].astype(float)
+                if st.checkbox(f"Remove outliers for {stream}", value=True):
+                    mean = q_series.mean()
+                    std = q_series.std() if q_series.std() > 0 else 1.0
+                    mask_vals = (np.abs(q_series - mean) <= 3 * std)
+                    wds = well_data[mask_vals]
+                    q_vals = wds[stream].values
+                    t_vals = wds["t_months"].values
+                else:
+                    q_vals = well_data[stream].values
+                    t_vals = well_data["t_months"].values
+                mask_pos = q_vals > 0
+                q_vals = q_vals[mask_pos]
+                t_vals = t_vals[mask_pos]
+                model_choice = st.selectbox(f"Decline model for {stream}", ["Exponential", "Hyperbolic", "Harmonic"])
+                b_override = None
+                if model_choice == "Hyperbolic" and st.checkbox(f"Manual b‑factor override for {stream}", value=False):
+                    b_override = st.number_input(f"b‑factor (override) for {stream}", value=0.5, min_value=0.0, max_value=2.0, step=0.1)
+                min_dt = st.number_input(f"Minimum terminal decline (%) for {stream}", value=5.0, min_value=0.0, max_value=30.0, step=0.5) / 100.0
+                if len(q_vals) >= 3:
+                    result = fit_decline_model(t_vals, q_vals, model_choice, b_override=b_override, min_terminal_decline=min_dt)
+                    if "error" in result:
+                        st.error(f"Error fitting curve for {stream}: {result['error']}")
+                    else:
+                        clean_name = stream.replace("_rate", "")
+                        st.markdown(f"#### {clean_name.title()} decline fit")
+                        st.write(f"Initial rate (qᵢ): {result['qi']:.2f}")
+                        st.write(f"Initial decline (Dᵢ): {result['Di']:.4f} per month")
+                        st.write(f"b‑factor: {result['b']:.3f}")
+                        st.write(f"R²: {result['R2']:.3f}")
+                        st.write(f"RMSE: {result['RMSE']:.3f}")
+                        fig, ax = plt.subplots()
+                        ax.plot(t_vals, q_vals, 'o', label=f"Observed {clean_name}")
+                        ax.plot(t_vals, result['q_pred'], '-', label=f"Fitted {clean_name}")
+                        ax.set_xlabel("Time (months)")
+                        ax.set_ylabel(f"Production rate ({clean_name.upper()})")
+                        ax.set_title(f"Decline Curve Fit – {clean_name.title()} ({model_choice})")
+                        ax.legend()
+                        st.pyplot(fig)
+                else:
+                    st.warning(f"Not enough data points to fit a decline curve for {stream}")
+            st.stop()
+            if False:
+                """
+                # In the DCA tab, after reading the uploaded CSV file into a DataFrame `df`:
+                df = pd.read_csv(uploaded_file)
                 df['date'] = pd.to_datetime(df['date'])
                 
                 # Compute time since first production in months for each well
@@ -926,11 +1146,7 @@ def render_app() -> None:
                         if 'error' in result:
                             st.error(f"Error fitting curve for {stream}: {result['error']}")
                         else:
-                            # Clean up the stream name for display.  When using f‑strings,
-                            # avoid nesting quotes that can confuse the parser.  Precompute
-                            # the replacement instead of calling .replace() inside the f‑string.
-                            clean_name = stream.replace('_rate', '')
-                            st.markdown(f'#### {clean_name.title()} decline fit')
+                            st.markdown(f'#### {stream.replace('_rate',"").title()} decline fit')
                             st.write(f"Initial rate (qᵢ): {result['qi']:.2f}")
                             st.write(f"Initial decline (Dᵢ): {result['Di']:.4f} per month")
                             st.write(f"b‑factor: {result['b']:.3f}")
@@ -949,8 +1165,7 @@ def render_app() -> None:
                             st.pyplot(fig)
                     else:
                         st.warning(f'Not enough data points to fit a decline curve for {stream}')
-            except Exception as e:
-                st.error(f'Error processing decline analysis: {e}')
+                """
     # -------------------------------------------------------------------------
     # Help & Tutorial Tab
     # -------------------------------------------------------------------------
