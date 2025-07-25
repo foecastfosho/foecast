@@ -627,7 +627,8 @@ def render_app() -> None:
         "Use the tabs below to build a discounted cash flow (DCF) forecast or to\n"
         "perform decline curve analysis (DCA) on historical production data."
     )
-    tab_dcf, tab_dca = st.tabs(['DCF Model', 'Decline Curve Analysis'])
+    # Use three tabs: DCF model, decline curve analysis, and a help/tutorial
+    tab_dcf, tab_dca, tab_help = st.tabs(['DCF Model', 'Decline Curve Analysis', 'Help & Tutorial'])
     # -------------------------------
     # DCF Model Tab
     # -------------------------------
@@ -912,6 +913,79 @@ def render_app() -> None:
                 st.error(f'Unable to read file: {e}')
         else:
             st.info('Please upload a CSV with columns: date (YYYY‑MM‑DD), well_id, rate.')
+
+    # -------------------------------------------------------------------------
+    # Help & Tutorial Tab
+    # -------------------------------------------------------------------------
+    with tab_help:
+        """
+        The Help tab provides an overview of how the discounted cash flow model
+        works, defines key terminology, and offers step‑by‑step instructions.
+        A downloadable PDF version of this guide is also available.
+        """
+        st.header('Help & Tutorial')
+        # Overview section
+        st.markdown('### Overview')
+        st.markdown(
+            'This model evaluates the value of an oil and gas royalty interest using discounted cash flow (DCF) analysis.\n'
+            'It forecasts monthly production from your wells, applies price assumptions, taxes and costs, and discounts the resulting cash flows to compute metrics such as net present value (NPV), PV10, PV15 and payback period.\n'
+            'The model can handle existing producing wells (PDP), permitted but undrilled wells (PUDs) and future locations, making it suitable for diverse evaluations.\n'
+            'For example, you can assess a 1 % royalty in a 640‑acre unit containing four producing wells and two planned drilling spacing units (DSUs).'
+        )
+        # Workflow diagram
+        st.markdown('### Model Workflow')
+        st.image('/home/oai/share/dcf_flow_diagram.png', caption='High‑level workflow of the DCF model', use_column_width=True)
+        # Glossary
+        st.markdown('### Glossary of Key Terms')
+        glossary_items = [
+            ('DCF (Discounted Cash Flow)', 'A valuation method estimating the present value of an investment based on its expected future cash flows【735789832473702†L325-L340】.'),
+            ('NPV / PV10 / PV15', 'NPV is the net present value of future cash flows discounted at a chosen rate. PV10 and PV15 are standard discount rates of 10 % and 15 %, commonly used to value reserves【817667812575893†L240-L246】.'),
+            ('qᵢ (Initial Production Rate)', 'The initial production rate of a well at the start of the forecast, typically measured in barrels per day or Mcf per day.'),
+            ('Dᵢ (Initial Decline Rate)', 'The initial annualized decline rate in the first year of production; shale wells often decline 64–70 %【300152174197150†L225-L235】.'),
+            ('b‑factor (Decline Exponent)', 'The Arps b‑factor controls the shape of a decline curve: b=0 gives exponential decline, b=1 harmonic, and 0<b<1 hyperbolic【651949411700584†L112-L117】.'),
+            ('NRI (Net Revenue Interest)', 'The proportion of production revenue a royalty owner receives after deducting expenses and royalty burdens【404001467312245†L54-L67】.'),
+            ('Royalty Decimal / Gross Royalty', 'The fractional share of production revenue stipulated in a lease, expressed as a decimal (e.g., 0.1875 for 3/16ths).'),
+            ('PDP (Proved Developed Producing)', 'Reserves expected to be recovered from currently producing zones under continuation of present operating methods【832034642446589†L18-L22】.'),
+            ('PUD (Proved Undeveloped)', 'Proved reserves categorized as undeveloped—hydrocarbon resources requiring new wells or further investment for recovery【449576985926588†L18-L57】.'),
+            ('Strip Pricing / Futures Strip', 'A pricing approach using futures contracts in sequential delivery months to lock in commodity prices over a specified time frame【364657486048314†L233-L253】.'),
+            ('Price Differential', 'The difference between an established benchmark price and the realized price at the lease or field, accounting for quality, transportation and regional adjustments【483537226548607†L73-L76】.'),
+            ('Post‑Production Costs', 'Expenses incurred after extraction—such as transportation, processing, and marketing—that are deducted from revenue before paying royalties【431491580934731†L60-L80】.'),
+        ]
+        for term, definition in glossary_items:
+            st.markdown(f'**{term}**: {definition}')
+        # Step‑by‑step guide
+        st.markdown('### Step‑by‑Step Guide')
+        st.markdown(
+            '* **Enter Your Wells** – In the DCF Model tab, specify the number of wells and input well type (PDP, PUD or Future), first production date, initial rates, decline parameters, royalty decimal and NRI for each well.\n'
+            '* **Upload or Define Pricing** – Choose Flat pricing or upload a Market Strip from the sidebar. Enter price differentials for oil, gas and NGL.\n'
+            '* **Set Global Assumptions** – Specify the model start date, forecast horizon, discount rate, tax rates, and optional post‑production costs.\n'
+            '* **Generate Future Wells** – Use the auto‑generate tool to schedule future wells based on acreage and spacing assumptions.\n'
+            '* **Run the Forecast** – Click **Run forecast** to compute monthly production, revenue, taxes, costs and net royalty cash flows. The app then calculates NPV, PV10, PV15 and payback period.\n'
+            '* **Review Results** – Examine summary metrics, present value by well type, and cumulative cash flow chart. Expand the detailed table or download a CSV.\n'
+            '* **Perform Risk Analysis** – Enable the Monte Carlo simulation to see P10/P50/P90 NPVs based on price and volume variability.'
+        )
+        # DCA guidance
+        st.markdown('### Decline Curve Analysis (DCA) Guidance')
+        st.markdown(
+            'In the DCA tab, upload historical production data (CSV with `date`, `well_id` and `rate`).\n'
+            'Choose a decline model – **Exponential**, **Hyperbolic** or **Harmonic** – and optionally override the b‑factor.\n'
+            'The model fits a decline curve using non‑linear regression, reports qᵢ, Dᵢ and b (if applicable), and computes R² and RMSE to gauge fit quality.\n'
+            'Use the plot of observed versus fitted production rates to validate the fit and adjust parameters as needed.'
+        )
+        st.image('/home/oai/share/decline_curve_examples.png', caption='Example exponential, hyperbolic and harmonic decline curves', use_column_width=True)
+        # Downloadable PDF
+        st.markdown('### Downloadable Guide')
+        try:
+            with open('/home/oai/share/dcf_help_guide.pdf', 'rb') as pdf_file:
+                pdf_bytes = pdf_file.read()
+            st.download_button(
+                label='Download PDF Guide',
+                data=pdf_bytes,
+                file_name='DCF_Help_Guide.pdf',
+                mime='application/pdf'
+            )
+        except Exception:
+            st.info('PDF guide is not available. Please contact support.')
 
 
 # If executed as a script via Streamlit, render the app
