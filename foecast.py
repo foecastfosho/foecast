@@ -348,6 +348,158 @@ def compute_cash_flows(
     return result
 
 
+# ---------------------------------------------------------------------------
+# Investment metrics helper
+#
+# This helper takes the result DataFrame produced by ``compute_cash_flows`` and
+# a user‑defined acquisition cost to derive additional investment metrics.
+# It calculates the internal rate of return (IRR), the payback period (based
+# on undiscounted and discounted cash flows), the profitability index (PI)
+# and the multiple on invested capital (MOIC).  It also constructs an
+# augmented cash flow table that includes the initial capital outlay at a
+# specified closing month.
+def compute_investment_metrics(
+    result_df: pd.DataFrame,
+    acquisition_cost: float,
+    discount_rate: float,
+    model_start: datetime.date,
+    closing_date: Optional[datetime.date] = None,
+) -> dict:
+    """
+    Compute investment performance metrics given a cash flow forecast and an
+    acquisition cost.
+
+    Parameters
+    ----------
+    result_df : pd.DataFrame
+        DataFrame returned by ``compute_cash_flows`` containing monthly net
+        royalty cash flows and discount factors.
+    acquisition_cost : float
+        Positive dollar amount representing the upfront purchase price or
+        capital outlay.  This cost will be treated as a negative cash flow.
+    discount_rate : float
+        Annual discount rate (decimal) used for discounted payback period and
+        NPV calculations.
+    model_start : datetime.date
+        The start date of the forecast.  Used to align the closing month.
+    closing_date : Optional[datetime.date], default None
+        Date when the acquisition cost is incurred.  If None, the cost is
+        applied at the first month of the forecast.
+
+    Returns
+    -------
+    dict
+        A dictionary containing the following keys:
+        - ``cash_flow_table`` (pd.DataFrame): augmented table with columns
+          ['date', 'cash_inflow', 'acquisition', 'net_cash',
+           'discount_factor', 'discounted_net_cash', 'cumulative_net_cash',
+           'cumulative_discounted'].
+        - ``irr_annual`` (float or None): annualized internal rate of return.
+        - ``payback_months`` (int or None): payback period in months based on
+          undiscounted cash flows (including the initial cost).
+        - ``discounted_payback_months`` (int or None): payback period in
+          months based on discounted cash flows.
+        - ``npv`` (float): net present value of the investment at the
+          specified discount rate.
+        - ``profitability_index`` (float or None): profitability index
+          (PV of returns divided by acquisition cost).
+        - ``moic`` (float or None): multiple on invested capital (total
+          undiscounted returns divided by acquisition cost).
+    """
+    # Copy relevant arrays
+    cash_inflow = result_df['net_royalty'].values.astype(float)
+    discount_factors = result_df['discount_factor'].values.astype(float)
+    dates = result_df['date'].values
+    n_periods = len(cash_inflow)
+    # Determine the month index when the acquisition occurs
+    if closing_date is None:
+        closing_month_index = 0
+    else:
+        # Compute difference in months between closing_date and model_start
+        delta_months = (closing_date.year - model_start.year) * 12 + (closing_date.month - model_start.month)
+        closing_month_index = max(0, int(delta_months))
+        # Cap at forecast horizon
+        if closing_month_index >= n_periods:
+            closing_month_index = n_periods - 1
+    # Build arrays for acquisition and net cash
+    acquisition_array = np.zeros(n_periods)
+    if acquisition_cost > 0:
+        acquisition_array[closing_month_index] = -acquisition_cost
+    # Net cash including acquisition cost
+    net_cash = cash_inflow + acquisition_array
+    # Discounted net cash
+    discounted_net_cash = net_cash * discount_factors
+    # Cumulative sums
+    cumulative_net_cash = np.cumsum(net_cash)
+    cumulative_discounted = np.cumsum(discounted_net_cash)
+    # Compute IRR on monthly basis; annualize if possible
+    irr_monthly = None
+    try:
+        # Prefer numpy_financial if available for accurate IRR calculation
+        try:
+            import numpy_financial as npf  # type: ignore
+            irr_val = npf.irr(net_cash)
+        except Exception:
+            # Fall back to numpy's IRR if available
+            irr_val = np.irr(net_cash)  # type: ignore[attr-defined]
+        if irr_val is not None and not np.isnan(irr_val):
+            irr_monthly = irr_val
+    except Exception:
+        irr_monthly = None
+    if irr_monthly is not None and np.isfinite(irr_monthly):
+        irr_annual = (1 + irr_monthly) ** 12 - 1
+    else:
+        irr_annual = None
+    # Payback periods
+    payback_months = None
+    idx = np.where(cumulative_net_cash > 0)[0]
+    if len(idx) > 0:
+        payback_months = int(idx[0])
+    discounted_payback_months = None
+    idx_d = np.where(cumulative_discounted > 0)[0]
+    if len(idx_d) > 0:
+        discounted_payback_months = int(idx_d[0])
+    # NPV (PV of returns minus cost)
+    npv = discounted_net_cash.sum()
+    # Profitability index: present value of returns divided by acquisition cost.
+    # The PV of returns is the discounted value of the future cash inflows
+    # (before subtracting the acquisition cost).  result_df does not
+    # include the acquisition cost, so we compute it using the discounted
+    # cash inflows from the input DataFrame.  We therefore use
+    # (npv - discounted value of the negative cost) + acquisition cost * df
+    profitability_index = None
+    if acquisition_cost > 0:
+        # Present value of future inflows excluding the acquisition cost
+        pv_returns = npv + acquisition_cost * discount_factors[closing_month_index]
+        profitability_index = pv_returns / acquisition_cost
+    # Multiple on invested capital: total undiscounted returns divided by cost
+    moic = None
+    if acquisition_cost > 0:
+        # Total cash returned (sum of positive net cash flows excluding the initial cost)
+        total_return = cash_inflow.sum()
+        moic = total_return / acquisition_cost
+    # Build augmented table
+    cf_table = pd.DataFrame({
+        'date': dates,
+        'cash_inflow': cash_inflow,
+        'acquisition': acquisition_array,
+        'net_cash': net_cash,
+        'discount_factor': discount_factors,
+        'discounted_net_cash': discounted_net_cash,
+        'cumulative_net_cash': cumulative_net_cash,
+        'cumulative_discounted': cumulative_discounted,
+    })
+    return {
+        'cash_flow_table': cf_table,
+        'irr_annual': irr_annual,
+        'payback_months': payback_months,
+        'discounted_payback_months': discounted_payback_months,
+        'npv': npv,
+        'profitability_index': profitability_index,
+        'moic': moic,
+    }
+
+
 def run_monte_carlo(
     wells: List[Well],
     price_deck: pd.DataFrame,
@@ -744,104 +896,217 @@ def render_app() -> None:
         # Set start month indices for all wells
         for well in wells:
             well.set_start_index(model_start)
-        # Compute cash flows when user clicks button
-    if st.button('Run forecast'):
-        result_df = compute_cash_flows(
-            wells=wells,
-            price_deck=price_deck,
-            severance_tax_oil=severance_tax_oil,
-            severance_tax_gas=severance_tax_gas,
-            ad_valorem_tax=ad_valorem_tax,
-            post_prod_cost_pct=post_prod_pct,
-            discount_rate=discount_rate,
-            forecast_months=forecast_months,
+
+        # ------------------------------------------------------------------
+        # Acquisition / Investment Inputs (within DCF tab)
+        #
+        # Allow the user to specify an upfront capital cost to evaluate
+        # royalty acquisition economics.  Users can enter either a lump sum or
+        # a per‑net‑royalty‑acre price multiplied by the net royalty acres.  An
+        # optional closing date determines when the cost is incurred in the
+        # cash flow schedule.
+        st.subheader('Acquisition / Investment')
+        acq_type = st.selectbox(
+            'Acquisition price input type',
+            ['None', 'Lump sum', 'Per net royalty acre'],
+            key='acq_type_dcf'
         )
-        # Display summary metrics
-        st.subheader('Summary Results')
-        col1, col2, col3 = st.columns(3)
-        col1.metric('Undiscounted Net Cash Flow ($)', f"{result_df.attrs['undiscounted_total']:,.0f}")
-        col2.metric('Discounted Net Cash Flow ($)', f"{result_df.attrs['discounted_total']:,.0f}")
-        payback = result_df.attrs['payback_date']
-        col3.metric('Payback Date', payback.strftime('%Y-%m') if payback is not None else 'N/A')
-        # PV by well type
-        st.markdown('**Present Value by Well Type**')
-        pv_type_df = pd.DataFrame(
-            {
-                'Well type': list(result_df.attrs['pv_by_type'].keys()),
-                'PV (USD)': list(result_df.attrs['pv_by_type'].values()),
-                'Undiscounted (USD)': list(result_df.attrs['undiscounted_by_type'].values()),
-            }
-        )
-        st.dataframe(pv_type_df)
-        # Plot cumulative cash flow
-        st.line_chart(
-            result_df.set_index('date')[['cumulative_cf', 'cumulative_discounted']],
-            use_container_width=True
-        )
-        # Display monthly cash flow table (optionally limit rows)
-        with st.expander('Detailed Cash Flow Table'):
-            st.dataframe(result_df)
-        # Provide option to download results as CSV
-        csv = result_df.to_csv(index=False).encode('utf-8')
-        st.download_button(
-            label='Download cash flow data as CSV',
-            data=csv,
-            file_name='royalty_dcf_results.csv',
-            mime='text/csv'
-        )
-        # Monte Carlo simulation option
-        st.markdown('---')
-        st.subheader('Risk Analysis (Monte Carlo)')
-        if st.checkbox('Run Monte Carlo simulation'):
-            iterations = st.number_input(
-                'Number of iterations', min_value=10, max_value=2000, value=200, step=10,
-                help='Higher iterations improve accuracy but increase computation time.'
+        # Initialize cost and closing date
+        acquisition_cost = 0.0
+        closing_date_input = model_start
+        if acq_type == 'Lump sum':
+            acquisition_cost = st.number_input(
+                'Acquisition price (USD)',
+                value=0.0,
+                min_value=0.0,
+                step=1000.0,
+                help='Enter the total purchase price for the royalty interest.'
             )
-            price_sigma = st.number_input(
-                'Price variability (standard deviation %)', min_value=0.0, max_value=0.5, value=0.10, step=0.01,
-                help='Standard deviation of price multiplier. 10 % means prices vary roughly ±10 %.'
+        elif acq_type == 'Per net royalty acre':
+            price_per_nra = st.number_input(
+                'Acquisition price per net royalty acre ($/NRA)',
+                value=0.0,
+                min_value=0.0,
+                step=100.0,
+                help='Price per net royalty acre.'
             )
-            vol_sigma = st.number_input(
-                'Production variability (standard deviation %)', min_value=0.0, max_value=0.5, value=0.10, step=0.01,
-                help='Standard deviation of production multiplier.'
+            nr_acres = st.number_input(
+                'Net royalty acres (NRA)',
+                value=0.0,
+                min_value=0.0,
+                step=1.0,
+                help='Number of net royalty acres you are acquiring.'
             )
-            if st.button('Run Monte Carlo'):
-                with st.spinner('Running simulations...'):
-                    mc_results = run_monte_carlo(
-                        wells=wells,
-                        price_deck=price_deck,
-                        severance_tax_oil=severance_tax_oil,
-                        severance_tax_gas=severance_tax_gas,
-                        ad_valorem_tax=ad_valorem_tax,
-                        post_prod_cost_pct=post_prod_pct,
-                        discount_rate=discount_rate,
-                        forecast_months=forecast_months,
-                        model_start=model_start,
-                        iterations=int(iterations),
-                        price_sigma=float(price_sigma),
-                        vol_sigma=float(vol_sigma),
-                    )
-                # Compute percentiles
-                p10 = np.percentile(mc_results, 10)
-                p50 = np.percentile(mc_results, 50)
-                p90 = np.percentile(mc_results, 90)
-                st.write(
-                    f'**P10 NPV:** {p10:,.0f} USD\n\n'
-                    f'**P50 (median) NPV:** {p50:,.0f} USD\n\n'
-                    f'**P90 NPV:** {p90:,.0f} USD\n\n'
-                    'These values represent the distribution of discounted cash flows across the simulated scenarios.'
+            acquisition_cost = price_per_nra * nr_acres
+        # If a positive acquisition cost is specified, allow the user to
+        # choose the closing date (default to the model start).
+        if acq_type != 'None' and acquisition_cost > 0:
+            closing_date_input = st.date_input(
+                'Acquisition closing date',
+                value=model_start,
+                min_value=model_start,
+                help='Date when the acquisition cost is incurred.'
+            )
+
+        # ------------------------------------------------------------------
+        # Run the DCF forecast when the user clicks the button
+        if st.button('Run forecast'):
+            # Compute base cash flows without acquisition cost
+            result_df = compute_cash_flows(
+                wells=wells,
+                price_deck=price_deck,
+                severance_tax_oil=severance_tax_oil,
+                severance_tax_gas=severance_tax_gas,
+                ad_valorem_tax=ad_valorem_tax,
+                post_prod_cost_pct=post_prod_pct,
+                discount_rate=discount_rate,
+                forecast_months=forecast_months,
+            )
+            # Compute investment metrics and augmented cash flow table
+            metrics = compute_investment_metrics(
+                result_df,
+                acquisition_cost=float(acquisition_cost),
+                discount_rate=float(discount_rate),
+                model_start=model_start,
+                closing_date=closing_date_input,
+            )
+            cf_table = metrics['cash_flow_table']
+            irr_ann = metrics['irr_annual']
+            payback_months = metrics['payback_months']
+            disc_payback_months = metrics['discounted_payback_months']
+            npv = metrics['npv']
+            pi = metrics['profitability_index']
+            moic = metrics['moic']
+
+            # --------------------------------------------------------------
+            # Display summary and performance metrics
+            st.subheader('Summary Results')
+            base_col1, base_col2, base_col3 = st.columns(3)
+            base_col1.metric('Undiscounted Net Cash Flow ($)', f"{result_df.attrs['undiscounted_total']:,.0f}")
+            base_col2.metric('Discounted Net Cash Flow ($)', f"{result_df.attrs['discounted_total']:,.0f}")
+            # Payback period (undiscounted) in years and months
+            if payback_months is not None:
+                years = payback_months // 12
+                months = payback_months % 12
+                pb_label = f"{years} yr {months} mo"
+            else:
+                pb_label = 'N/A'
+            base_col3.metric('Payback Period (undiscounted)', pb_label)
+            # Investment performance summary
+            st.markdown('**Investment Performance Summary**')
+            perf_cols = st.columns(3)
+            # IRR
+            irr_label = 'N/A' if irr_ann is None or np.isnan(irr_ann) else f"{irr_ann * 100:.2f}%"
+            perf_cols[0].metric('Internal Rate of Return (IRR)', irr_label)
+            # Discounted payback period
+            if disc_payback_months is not None:
+                d_years = disc_payback_months // 12
+                d_months = disc_payback_months % 12
+                d_pb_label = f"{d_years} yr {d_months} mo"
+            else:
+                d_pb_label = 'N/A'
+            perf_cols[1].metric('Discounted Payback Period', d_pb_label)
+            # Profitability index and MOIC
+            pi_label = 'N/A' if pi is None or np.isnan(pi) else f"{pi:.2f}x"
+            moic_label = 'N/A' if moic is None or np.isnan(moic) else f"{moic:.2f}x"
+            perf_cols[2].metric('Profitability Index (PI)', pi_label)
+            # Second row of performance metrics
+            perf_cols2 = st.columns(3)
+            perf_cols2[0].metric('Multiple on Invested Capital (MOIC)', moic_label)
+            perf_cols2[1].metric('Net Present Value (NPV)', f"{npv:,.0f}")
+            perf_cols2[2].metric('Acquisition Cost', f"{acquisition_cost:,.0f}")
+            # Present value by well type
+            st.markdown('**Present Value by Well Type**')
+            pv_type_df = pd.DataFrame(
+                {
+                    'Well type': list(result_df.attrs['pv_by_type'].keys()),
+                    'PV (USD)': list(result_df.attrs['pv_by_type'].values()),
+                    'Undiscounted (USD)': list(result_df.attrs['undiscounted_by_type'].values()),
+                }
+            )
+            st.dataframe(pv_type_df)
+            # Cash flow waterfall: cumulative net cash vs discounted
+            st.markdown('**Cash Flow Waterfall**')
+            waterfall_data = cf_table.set_index('date')[['cumulative_net_cash', 'cumulative_discounted']]
+            st.line_chart(waterfall_data, use_container_width=True)
+            # Annotate breakeven dates
+            if payback_months is not None:
+                breakeven_date = cf_table['date'].iloc[payback_months]
+                st.info(f"Breakeven (undiscounted) occurs at {breakeven_date.strftime('%Y-%m')} after {pb_label}.")
+            if disc_payback_months is not None:
+                disc_breakeven_date = cf_table['date'].iloc[disc_payback_months]
+                st.info(f"Discounted breakeven occurs at {disc_breakeven_date.strftime('%Y-%m')} after {d_pb_label}.")
+            # Detailed cash flow table
+            with st.expander('Detailed Cash Flow Table'):
+                st.dataframe(cf_table)
+            # Download button
+            csv_data = cf_table.to_csv(index=False).encode('utf-8')
+            st.download_button(
+                label='Download cash flow data as CSV',
+                data=csv_data,
+                file_name='royalty_dcf_results.csv',
+                mime='text/csv'
+            )
+            # Risk analysis (Monte Carlo)
+            st.markdown('---')
+            st.subheader('Risk Analysis (Monte Carlo)')
+            if st.checkbox('Run Monte Carlo simulation'):
+                iterations = st.number_input(
+                    'Number of iterations', min_value=10, max_value=2000, value=200, step=10,
+                    help='Higher iterations improve accuracy but increase computation time.'
                 )
-                # Plot histogram of results
-                hist_df = pd.DataFrame({'NPV': mc_results})
-                st.bar_chart(hist_df['NPV'].value_counts().sort_index())
-        # Instructions on updating price decks
-        st.markdown('---')
-        st.markdown(
-            '### Updating the Price Deck\n'
-            'To update the price deck, select **Upload market strip** under the pricing options in the sidebar.\n'
-            'Provide a CSV with the columns `date`, `oil`, `gas`, and `ngl`.  The app will align your prices to the model start date and extend the last available price forward if necessary.\n'
-            'If no file is provided, flat prices entered in the sidebar will be used.'
-        )
+                price_sigma = st.number_input(
+                    'Price variability (standard deviation %)',
+                    min_value=0.0, max_value=0.5, value=0.10, step=0.01,
+                    help='Standard deviation of price multiplier. 10 % means prices vary roughly ±10 %.'
+                )
+                vol_sigma = st.number_input(
+                    'Production variability (standard deviation %)',
+                    min_value=0.0, max_value=0.5, value=0.10, step=0.01,
+                    help='Standard deviation of production multiplier.'
+                )
+                if st.button('Run Monte Carlo'):
+                    with st.spinner('Running simulations...'):
+                        mc_results = run_monte_carlo(
+                            wells=wells,
+                            price_deck=price_deck,
+                            severance_tax_oil=severance_tax_oil,
+                            severance_tax_gas=severance_tax_gas,
+                            ad_valorem_tax=ad_valorem_tax,
+                            post_prod_cost_pct=post_prod_pct,
+                            discount_rate=discount_rate,
+                            forecast_months=forecast_months,
+                            model_start=model_start,
+                            iterations=int(iterations),
+                            price_sigma=float(price_sigma),
+                            vol_sigma=float(vol_sigma),
+                        )
+                    # Compute percentiles
+                    p10 = np.percentile(mc_results, 10)
+                    p50 = np.percentile(mc_results, 50)
+                    p90 = np.percentile(mc_results, 90)
+                    st.write(
+                        f'**P10 NPV:** {p10:,.0f} USD\n\n'
+                        f'**P50 (median) NPV:** {p50:,.0f} USD\n\n'
+                        f'**P90 NPV:** {p90:,.0f} USD\n\n'
+                        'These values represent the distribution of discounted cash flows across the simulated scenarios.'
+                    )
+                    # Plot histogram of results
+                    hist_df = pd.DataFrame({'NPV': mc_results})
+                    st.bar_chart(hist_df['NPV'].value_counts().sort_index())
+            # Instructions on updating price decks
+            st.markdown('---')
+            st.markdown(
+                '### Updating the Price Deck\n'
+                'To update the price deck, select **Upload market strip** under the pricing options in the sidebar.\n'
+                'Provide a CSV with the columns `date`, `oil`, `gas`, and `ngl`.  The app will align your prices to the model start date and extend the last available price forward if necessary.\n'
+                'If no file is provided, flat prices entered in the sidebar will be used.'
+            )
+
+    # Disable the original run forecast block (moved inside the DCF tab)
+    if False:
+        # Original DCF results logic has been superseded by the new implementation.
+        pass
     # -------------------------------
     # Decline Curve Analysis Tab
     # -------------------------------
