@@ -94,7 +94,7 @@ def hyperbolic_decline_rate(qi: float, Di: float, b: float, Dt: float, months: i
         70 % decline in the first year.
     b : float
         Arps b‑factor.  Typical shale wells fall between 0.3 and 1.0; we use
-        0.5 as a conservative default【787064351170111†L75-L87】.
+        0.5 as a conservative default.
     Dt : float
         Terminal exponential decline rate per year (fraction).  Once the
         hyperbolic decline rate falls below Dt, the curve transitions to
@@ -118,14 +118,15 @@ def hyperbolic_decline_rate(qi: float, Di: float, b: float, Dt: float, months: i
     # Instantaneous decline rate d(t) = Di / (1 + b * Di_m * t)
     inst_decline = Di / (1 + b * Di_m * t)
     # Find the transition month index where inst_decline <= Dt
-    switch_idx = np.argmax(inst_decline <= Dt_m) # Corrected to compare with monthly terminal rate
+    switch_idx_arr = np.where(inst_decline <= Dt_m)[0]
+    switch_idx = switch_idx_arr[0] if len(switch_idx_arr) > 0 else months
     
     # If the hyperbolic decline never falls below the terminal rate, use all
     # hyperbolic values.  Otherwise, switch to exponential after the switch_idx.
-    if switch_idx == 0 and inst_decline[0] <= Dt_m:
+    if switch_idx == 0:
         # Start immediately on exponential decline
         q = qi * np.power(1 - Dt_m, t)  # exponential decline from initial rate
-    elif inst_decline[-1] > Dt_m:
+    elif switch_idx == months:
         # Hyperbolic curve never meets terminal decline; use entire hyperbolic
         q = q_hyp.copy()
     else:
@@ -745,6 +746,8 @@ def render_app() -> None:
         st.session_state.active_scenario = "Default Case"
     if 'uploaded_deck' not in st.session_state:
         st.session_state.uploaded_deck = None
+    if 'dca_results' not in st.session_state:
+        st.session_state.dca_results = {}
 
 
     # --- Sidebar ---
@@ -871,6 +874,46 @@ def render_app() -> None:
             with st.expander(f'Well {i+1}: {well_data["name"]}'):
                 s_key = f"{st.session_state.active_scenario}_{i}"
                 
+                # --- Apply DCA Results Section ---
+                if st.session_state.dca_results:
+                    st.markdown("---")
+                    st.write("**Apply Fit from Decline Curve Analysis**")
+                    dca_streams = list(st.session_state.dca_results.keys())
+                    
+                    col1, col2 = st.columns([3, 1])
+                    selected_dca_stream = col1.selectbox(
+                        "Select analyzed stream to apply", 
+                        options=dca_streams,
+                        key=f"dca_select_{s_key}"
+                    )
+                    
+                    if col2.button("Apply DCA Fit", key=f"dca_apply_{s_key}"):
+                        dca_fit = st.session_state.dca_results[selected_dca_stream]
+                        
+                        # Convert qi from monthly to daily
+                        qi_daily = dca_fit['qi'] / 30.4375
+                        
+                        # Convert Di from monthly fraction to annual percentage
+                        di_annual = dca_fit['Di'] * 12
+                        
+                        # Update the well data in session state
+                        stream_name_lower = selected_dca_stream.lower()
+                        if 'oil' in stream_name_lower:
+                            well_data['qi_oil'] = qi_daily
+                        elif 'gas' in stream_name_lower:
+                            well_data['qi_gas'] = qi_daily
+                        elif 'ngl' in stream_name_lower:
+                            well_data['qi_ngl'] = qi_daily
+                        
+                        well_data['b_factor'] = dca_fit['b']
+                        well_data['initial_decline'] = di_annual
+                        
+                        st.success(f"Applied '{selected_dca_stream}' fit to Well {i+1}.")
+                        st.rerun()
+
+                st.markdown("---")
+
+
                 well_data['name'] = st.text_input('Well name/ID', value=well_data['name'], key=f'name_{s_key}')
                 well_data['well_type'] = st.selectbox('Well type', options=['PDP', 'PUD', 'Future'], index=['PDP', 'PUD', 'Future'].index(well_data['well_type']), key=f'type_{s_key}')
                 well_data['first_prod_date'] = st.date_input('First production date', value=datetime.date.fromisoformat(well_data['first_prod_date']), key=f'fpd_{s_key}').isoformat()
@@ -1059,8 +1102,12 @@ def render_app() -> None:
                     if 'error' in result:
                         st.error(f"Error fitting curve: {result['error']}")
                     else:
+                        # Store successful results in session state
+                        st.session_state.dca_results[selected_stream] = result
+                        st.success(f"Successfully fit '{selected_stream}'. Results are now available to apply in the DCF Model tab.")
+
                         st.markdown(f"#### Fit Results for {selected_stream}")
-                        st.write(f"**Initial rate (qᵢ):** {result['qi']:.2f}")
+                        st.write(f"**Initial rate (qᵢ):** {result['qi']:.2f} (units/month)")
                         st.write(f"**Initial decline (Dᵢ) per month:** {result['Di']:.4f}")
                         st.write(f"**b‑factor:** {result['b']:.3f}")
                         st.write(f"**R²:** {result['R2']:.3f}")
@@ -1097,12 +1144,12 @@ def render_app() -> None:
             
         st.markdown('### Glossary of Key Terms')
         glossary_items = [
-            ('DCF (Discounted Cash Flow)', 'A valuation method estimating the present value of an investment based on its expected future cash flows【735789832473702†L325-L340】.'),
-            ('NPV / PV10 / PV15', 'NPV is the net present value of future cash flows discounted at a chosen rate. PV10 and PV15 are standard discount rates of 10 % and 15 %, commonly used to value reserves【817667812575893†L240-L246】.'),
+            ('DCF (Discounted Cash Flow)', 'A valuation method estimating the present value of an investment based on its expected future cash flows.'),
+            ('NPV / PV10 / PV15', 'NPV is the net present value of future cash flows discounted at a chosen rate. PV10 and PV15 are standard discount rates of 10 % and 15 %, commonly used to value reserves.'),
             ('qᵢ (Initial Production Rate)', 'The initial production rate of a well at the start of the forecast, typically measured in barrels per day or Mcf per day.'),
-            ('Dᵢ (Initial Decline Rate)', 'The initial annualized decline rate in the first year of production; shale wells often decline 64–70 %【300152174197150†L225-L235】.'),
-            ('b‑factor (Decline Exponent)', 'The Arps b‑factor controls the shape of a decline curve: b=0 gives exponential decline, b=1 harmonic, and 0<b<1 hyperbolic【651949411700584†L112-L117】.'),
-            ('NRI (Net Revenue Interest)', 'The proportion of production revenue a royalty owner receives after deducting expenses and royalty burdens【404001467312245†L54-L67】.'),
+            ('Dᵢ (Initial Decline Rate)', 'The initial annualized decline rate in the first year of production; shale wells often decline 64–70 %.'),
+            ('b‑factor (Decline Exponent)', 'The Arps b‑factor controls the shape of a decline curve: b=0 gives exponential decline, b=1 harmonic, and 0<b<1 hyperbolic.'),
+            ('NRI (Net Revenue Interest)', 'The proportion of production revenue a royalty owner receives after deducting expenses and royalty burdens.'),
         ]
         for term, definition in glossary_items:
             st.markdown(f'**{term}**: {definition}')
