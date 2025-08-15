@@ -925,7 +925,9 @@ def render_app() -> None:
 
                 c1, c2, c3 = st.columns(3)
                 well_data['b_factor'] = c1.number_input('Arps b‑factor', value=well_data['b_factor'], min_value=0.0, max_value=2.0, step=0.1, key=f'b_{s_key}')
-                well_data['initial_decline'] = c2.number_input('Initial decline rate (%/yr)', value=well_data['initial_decline']*100, min_value=0.0, max_value=100.0, key=f'di_{s_key}') / 100.0
+                # FIX: Cap the value to prevent Streamlit error
+                decline_value = min(well_data['initial_decline'] * 100, 100.0)
+                well_data['initial_decline'] = c2.number_input('Initial decline rate (%/yr)', value=decline_value, min_value=0.0, max_value=100.0, key=f'di_{s_key}') / 100.0
                 well_data['terminal_decline'] = c3.number_input('Terminal decline rate (%/yr)', value=well_data['terminal_decline']*100, min_value=0.0, max_value=30.0, key=f'dt_{s_key}') / 100.0
 
                 c1, c2 = st.columns(2)
