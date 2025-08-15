@@ -1000,7 +1000,8 @@ def render_app() -> None:
         prod_file = st.file_uploader('Upload production data (CSV)', type=['csv'], key="dca_uploader")
         if prod_file is not None:
             try:
-                df = pd.read_csv(prod_file)
+                # Read the CSV, interpreting commas as thousands separators
+                df = pd.read_csv(prod_file, thousands=',')
                 st.markdown('<small><em>Accepted date formats include MM/DD/YYYY, YYYY-MM-DD, etc.</em></small>', unsafe_allow_html=True)
 
                 date_cols = [c for c in df.columns if 'date' in c.lower() or df[c].dtype == 'object']
