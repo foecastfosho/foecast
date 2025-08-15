@@ -701,8 +701,10 @@ def fit_decline_model(
 
 def get_default_scenario():
     """Returns a dictionary with the default input values for a new scenario."""
+    today = datetime.date.today()
+    model_start_date = datetime.date(today.year, today.month, 1)
     return {
-        "model_start": datetime.date(datetime.date.today().year, datetime.date.today().month, 1),
+        "model_start": model_start_date,
         "forecast_months": 360,
         "discount_rate": 0.10,
         "price_option": "Flat pricing",
@@ -716,15 +718,14 @@ def get_default_scenario():
         "severance_tax_gas": 0.075,
         "ad_valorem_tax": 0.01,
         "post_prod_pct": 0.0,
-        "well_count": 1,
         "wells": [Well(
-            name='Well 1', well_type='PDP', first_prod_date=datetime.date.today(),
+            name='Well 1', well_type='PDP', first_prod_date=model_start_date,
             qi_oil=300.0, qi_gas=800.0, qi_ngl=20.0, b_factor=0.5,
             initial_decline=0.70, terminal_decline=0.05,
             royalty_decimal=0.1875, nri=0.80
         ).to_dict()],
         "acquisition_cost": 0.0,
-        "closing_date": datetime.date(datetime.date.today().year, datetime.date.today().month, 1),
+        "closing_date": model_start_date,
     }
 
 def render_app() -> None:
@@ -766,7 +767,11 @@ def render_app() -> None:
         new_scenario_name = st.text_input("New Scenario Name")
         if st.button("Save as New Scenario"):
             if new_scenario_name and new_scenario_name not in st.session_state.scenarios:
-                st.session_state.scenarios[new_scenario_name] = active_scenario_data.copy()
+                # Deep copy of the current state to the new scenario
+                st.session_state.scenarios[new_scenario_name] = {
+                    k: (v.copy() if isinstance(v, (dict, list)) else v) 
+                    for k, v in active_scenario_data.items()
+                }
                 st.session_state.active_scenario = new_scenario_name
                 st.rerun()
             else:
@@ -848,26 +853,22 @@ def render_app() -> None:
         )
         
         # Adjust the number of wells in the scenario data if needed
-        current_wells = [Well.from_dict(w) for w in active_scenario_data["wells"]]
-        if well_count > len(current_wells):
-            for i in range(len(current_wells), well_count):
-                new_well_date = active_scenario_data["model_start"] + datetime.timedelta(days=30 * i)
-                current_wells.append(Well(
+        current_wells_data = active_scenario_data["wells"]
+        if well_count > len(current_wells_data):
+            for i in range(len(current_wells_data), well_count):
+                new_well_date = active_scenario_data["model_start"] + pd.DateOffset(months=i)
+                current_wells_data.append(Well(
                     name=f'Well {i+1}', well_type='PDP', first_prod_date=new_well_date,
                     qi_oil=300.0, qi_gas=800.0, qi_ngl=20.0, b_factor=0.5,
                     initial_decline=0.70, terminal_decline=0.05,
                     royalty_decimal=0.1875, nri=0.80
-                ))
-        elif well_count < len(current_wells):
-            current_wells = current_wells[:well_count]
+                ).to_dict())
+        elif well_count < len(current_wells_data):
+            active_scenario_data["wells"] = current_wells_data[:well_count]
         
-        active_scenario_data["wells"] = [w.to_dict() for w in current_wells]
-        
-        wells_from_ui: List[Well] = []
         for i in range(well_count):
             well_data = active_scenario_data["wells"][i]
             with st.expander(f'Well {i+1}: {well_data["name"]}'):
-                # Create a unique key for each widget based on scenario and well index
                 s_key = f"{st.session_state.active_scenario}_{i}"
                 
                 well_data['name'] = st.text_input('Well name/ID', value=well_data['name'], key=f'name_{s_key}')
@@ -887,8 +888,6 @@ def render_app() -> None:
                 c1, c2 = st.columns(2)
                 well_data['royalty_decimal'] = c1.number_input('Royalty decimal (fraction)', value=well_data['royalty_decimal'], min_value=0.0, max_value=1.0, step=0.001, format="%.4f", key=f'roy_{s_key}')
                 well_data['nri'] = c2.number_input('Net revenue interest (NRI)', value=well_data['nri'], min_value=0.0, max_value=1.0, step=0.01, key=f'nri_{s_key}')
-
-                wells_from_ui.append(Well.from_dict(well_data))
 
         # --- Acquisition Inputs ---
         st.subheader('Acquisition / Investment')
@@ -915,7 +914,6 @@ def render_app() -> None:
 
             with st.spinner("Running forecasts..."):
                 for name, scenario in scenarios_to_run.items():
-                    # Build wells and price deck for the current scenario
                     wells = [Well.from_dict(w) for w in scenario['wells']]
                     for well in wells:
                         well.set_start_index(scenario['model_start'])
@@ -927,7 +925,6 @@ def render_app() -> None:
                         uploaded_deck=st.session_state.uploaded_deck if scenario['price_option'] == 'Upload market strip' else None
                     )
                     
-                    # Compute cash flows
                     result_df = compute_cash_flows(
                         wells=wells, price_deck=price_deck,
                         severance_tax_oil=scenario['severance_tax_oil'], severance_tax_gas=scenario['severance_tax_gas'],
@@ -935,21 +932,14 @@ def render_app() -> None:
                         discount_rate=scenario['discount_rate'], forecast_months=scenario['forecast_months']
                     )
                     
-                    # Compute investment metrics
                     metrics = compute_investment_metrics(
                         result_df, acquisition_cost=scenario['acquisition_cost'],
                         discount_rate=scenario['discount_rate'], model_start=scenario['model_start'],
                         closing_date=scenario['closing_date']
                     )
                     
-                    # Store results
-                    all_results.append({
-                        "name": name,
-                        "result_df": result_df,
-                        "metrics": metrics
-                    })
+                    all_results.append({"name": name, "result_df": result_df, "metrics": metrics})
 
-            # --- Display Results ---
             st.header("Forecast Results")
 
             if run_all and len(all_results) > 1:
@@ -959,32 +949,22 @@ def render_app() -> None:
                     m = res['metrics']
                     r = res['result_df']
                     comparison_data.append({
-                        "Scenario": res['name'],
-                        "NPV ($)": m['npv'],
+                        "Scenario": res['name'], "NPV ($)": m['npv'],
                         "Undiscounted CF ($)": r.attrs['undiscounted_total'],
                         "Discounted CF ($)": r.attrs['discounted_total'],
                         "IRR (%)": m['irr_annual'] * 100 if m['irr_annual'] is not None else None,
-                        "MOIC (x)": m['moic'],
-                        "Payback (months)": m['payback_months'],
+                        "MOIC (x)": m['moic'], "Payback (months)": m['payback_months'],
                     })
                 comp_df = pd.DataFrame(comparison_data).set_index("Scenario")
                 st.dataframe(comp_df.style.format({
-                    "NPV ($)": "{:,.0f}",
-                    "Undiscounted CF ($)": "{:,.0f}",
-                    "Discounted CF ($)": "{:,.0f}",
-                    "IRR (%)": "{:.1f}%",
-                    "MOIC (x)": "{:.2f}x",
+                    "NPV ($)": "{:,.0f}", "Undiscounted CF ($)": "{:,.0f}",
+                    "Discounted CF ($)": "{:,.0f}", "IRR (%)": "{:.1f}%", "MOIC (x)": "{:.2f}x",
                 }))
 
-
-            # Display results for the first (or only) scenario run
             first_result = all_results[0]
             st.subheader(f"Summary: {first_result['name']}")
-
-            res_metrics = first_result['metrics']
-            res_df = first_result['result_df']
+            res_metrics, res_df = first_result['metrics'], first_result['result_df']
             
-            # Metrics
             c1, c2, c3 = st.columns(3)
             c1.metric("NPV ($)", f"{res_metrics['npv']:,.0f}")
             c2.metric("IRR", f"{res_metrics['irr_annual']*100:.1f}%" if res_metrics['irr_annual'] is not None else "N/A")
@@ -992,12 +972,9 @@ def render_app() -> None:
             
             c1, c2, c3 = st.columns(3)
             c1.metric("Discounted CF ($)", f"{res_df.attrs['discounted_total']:,.0f}")
-            payback_label = f"{res_metrics['payback_months']} months" if res_metrics['payback_months'] is not None else "N/A"
-            c2.metric("Payback Period", payback_label)
-            disc_payback_label = f"{res_metrics['discounted_payback_months']} months" if res_metrics['discounted_payback_months'] is not None else "N/A"
-            c3.metric("Discounted Payback", disc_payback_label)
+            c2.metric("Payback Period", f"{res_metrics['payback_months']} months" if res_metrics['payback_months'] is not None else "N/A")
+            c3.metric("Discounted Payback", f"{res_metrics['discounted_payback_months']} months" if res_metrics['discounted_payback_months'] is not None else "N/A")
 
-            # Charts and Tables
             st.markdown('**Cash Flow Waterfall**')
             waterfall_data = res_metrics['cash_flow_table'].set_index('date')[['cumulative_net_cash', 'cumulative_discounted']]
             st.line_chart(waterfall_data, use_container_width=True)
@@ -1010,7 +987,6 @@ def render_app() -> None:
                 label='Download cash flow data as CSV', data=csv_data,
                 file_name=f'royalty_dcf_{first_result["name"]}.csv', mime='text/csv'
             )
-
 
     # -------------------------------
     # Decline Curve Analysis Tab
@@ -1025,21 +1001,122 @@ def render_app() -> None:
         if prod_file is not None:
             try:
                 df = pd.read_csv(prod_file)
-                # (DCA logic remains the same as original file)
-                # ...
-                st.info("DCA functionality is available here.")
+                st.markdown('<small><em>Accepted date formats include MM/DD/YYYY, YYYY-MM-DD, etc.</em></small>', unsafe_allow_html=True)
+
+                date_cols = [c for c in df.columns if 'date' in c.lower() or df[c].dtype == 'object']
+                if not date_cols:
+                    st.error("No suitable date column found.")
+                    st.stop()
+                date_col = st.selectbox('Select the date column', date_cols)
+                
+                df['date_parsed'] = pd.to_datetime(df[date_col], errors='coerce')
+                if df['date_parsed'].isna().any():
+                    st.warning("Some dates could not be parsed. Please check the format.")
+                    st.stop()
+
+                well_id_cols = [c for c in df.columns if 'well' in c.lower() or 'api' in c.lower()]
+                if not well_id_cols:
+                    st.error("No suitable well identifier column found (e.g., 'well_id', 'api').")
+                    st.stop()
+                well_col = st.selectbox('Select the well identifier column', well_id_cols)
+
+                rate_cols = [c for c in df.columns if 'rate' in c.lower() or 'prod' in c.lower() or 'vol' in c.lower()]
+                if not rate_cols:
+                    st.error("No production rate columns found.")
+                    st.stop()
+                
+                df.sort_values([well_col, 'date_parsed'], inplace=True)
+                df['t_months'] = df.groupby(well_col)['date_parsed'].transform(lambda s: (s - s.min()).dt.days / 30.4375)
+
+                selected_well = st.selectbox('Select well for analysis', df[well_col].unique())
+                selected_stream = st.selectbox('Select stream for analysis', rate_cols)
+                
+                well_data = df[df[well_col] == selected_well].copy()
+                if well_data.empty:
+                    st.warning("No data for selected well.")
+                    st.stop()
+
+                q_vals = well_data[selected_stream].to_numpy(dtype=float)
+                t_vals = well_data['t_months'].to_numpy(dtype=float)
+                
+                # Filter out non-positive production values
+                pos_mask = q_vals > 0
+                q_vals = q_vals[pos_mask]
+                t_vals = t_vals[pos_mask]
+
+                if len(q_vals) < 3:
+                    st.warning("Not enough positive data points to fit a curve.")
+                else:
+                    model_choice = st.selectbox(f'Decline model for {selected_stream}', ['Exponential', 'Hyperbolic', 'Harmonic'])
+                    b_override = None
+                    if model_choice == 'Hyperbolic':
+                        if st.checkbox(f'Manual b-factor override for {selected_stream}'):
+                            b_override = st.number_input(f'b-factor', value=0.5, min_value=0.0, max_value=2.0)
+                    
+                    result = fit_decline_model(t_vals, q_vals, model_choice, b_override=b_override)
+
+                    if 'error' in result:
+                        st.error(f"Error fitting curve: {result['error']}")
+                    else:
+                        st.markdown(f"#### Fit Results for {selected_stream}")
+                        st.write(f"**Initial rate (qᵢ):** {result['qi']:.2f}")
+                        st.write(f"**Initial decline (Dᵢ) per month:** {result['Di']:.4f}")
+                        st.write(f"**b‑factor:** {result['b']:.3f}")
+                        st.write(f"**R²:** {result['R2']:.3f}")
+                        
+                        fig, ax = plt.subplots()
+                        ax.plot(t_vals, q_vals, 'o', label='Observed')
+                        ax.plot(t_vals, result['q_pred'], '-', label='Fitted')
+                        ax.set_xlabel('Time (months)')
+                        ax.set_ylabel('Production Rate')
+                        ax.set_title(f'Decline Curve Fit - {selected_well}')
+                        ax.legend()
+                        st.pyplot(fig)
 
             except Exception as e:
-                st.error('An unexpected error occurred while processing your production file. Please check your data and try again.')
+                st.error(f'An error occurred: {e}')
     
     # -------------------------------------------------------------------------
     # Help & Tutorial Tab
     # -------------------------------------------------------------------------
     with tab_help:
         st.header('Help & Tutorial')
-        # (Help logic remains the same as original file)
-        # ...
-        st.info("Help and tutorial information is available here.")
+        st.markdown('### Overview')
+        st.markdown(
+            'This model evaluates the value of an oil and gas royalty interest using discounted cash flow (DCF) analysis.\n'
+            'It forecasts monthly production from your wells, applies price assumptions, taxes and costs, and discounts the resulting cash flows to compute metrics such as net present value (NPV), PV10, PV15 and payback period.\n'
+            'The model can handle existing producing wells (PDP), permitted but undrilled wells (PUDs) and future locations, making it suitable for diverse evaluations.\n'
+            'For example, you can assess a 1 % royalty in a 640‑acre unit containing four producing wells and two planned drilling spacing units (DSUs).'
+        )
+        st.markdown('### Model Workflow')
+        try:
+            st.image('dcf_flow_diagram.png', caption='High‑level workflow of the DCF model', use_column_width=True)
+        except Exception:
+            st.info("Workflow diagram image not available.")
+            
+        st.markdown('### Glossary of Key Terms')
+        glossary_items = [
+            ('DCF (Discounted Cash Flow)', 'A valuation method estimating the present value of an investment based on its expected future cash flows【735789832473702†L325-L340】.'),
+            ('NPV / PV10 / PV15', 'NPV is the net present value of future cash flows discounted at a chosen rate. PV10 and PV15 are standard discount rates of 10 % and 15 %, commonly used to value reserves【817667812575893†L240-L246】.'),
+            ('qᵢ (Initial Production Rate)', 'The initial production rate of a well at the start of the forecast, typically measured in barrels per day or Mcf per day.'),
+            ('Dᵢ (Initial Decline Rate)', 'The initial annualized decline rate in the first year of production; shale wells often decline 64–70 %【300152174197150†L225-L235】.'),
+            ('b‑factor (Decline Exponent)', 'The Arps b‑factor controls the shape of a decline curve: b=0 gives exponential decline, b=1 harmonic, and 0<b<1 hyperbolic【651949411700584†L112-L117】.'),
+            ('NRI (Net Revenue Interest)', 'The proportion of production revenue a royalty owner receives after deducting expenses and royalty burdens【404001467312245†L54-L67】.'),
+        ]
+        for term, definition in glossary_items:
+            st.markdown(f'**{term}**: {definition}')
+
+        st.markdown('### Decline Curve Analysis (DCA) Guidance')
+        st.markdown(
+            'In the DCA tab, upload historical production data (CSV with `date`, `well_id` and `rate`).\n'
+            'Choose a decline model – **Exponential**, **Hyperbolic** or **Harmonic** – and optionally override the b‑factor.\n'
+            'The model fits a decline curve using non‑linear regression, reports qᵢ, Dᵢ and b (if applicable), and computes R² and RMSE to gauge fit quality.\n'
+            'Use the plot of observed versus fitted production rates to validate the fit and adjust parameters as needed.'
+        )
+        try:
+            st.image('decline_curve_examples.png', caption='Example exponential, hyperbolic and harmonic decline curves', use_column_width=True)
+        except Exception:
+            st.info("Decline curve examples image not available.")
 
 
 # If executed as a script via Streamlit, render the app
