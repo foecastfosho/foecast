@@ -242,6 +242,7 @@ def build_price_deck(
     ngl_start: float,
     ngl_mom_growth: float,
     custom_df: Optional[pd.DataFrame] = None,
+    uploaded_deck: Optional[pd.DataFrame] = None,
 ) -> pd.DataFrame:
     """Construct a monthly price deck.
 
@@ -269,8 +270,17 @@ def build_price_deck(
         Monthly deck with columns ``date``, ``oil``, ``gas``, and ``ngl``.
     """
     idx = pd.date_range(pd.to_datetime(start_date), periods=months, freq="MS")
-    if custom_df is not None and not custom_df.empty:
-        df = custom_df.copy()
+    # Support backward compatibility: prefer ``custom_df`` but also accept
+    # legacy argument ``uploaded_deck``.  If both are provided, ``custom_df``
+    # takes precedence.
+    df = None
+    if custom_df is not None:
+        df = custom_df
+    elif uploaded_deck is not None:
+        df = uploaded_deck
+    # Use the provided deck if available
+    if df is not None and not df.empty:
+        df = df.copy()
         df["date"] = pd.to_datetime(df["date"]).dt.to_period("M").dt.to_timestamp()
         df = (
             df.set_index("date")[["oil", "gas", "ngl"]]
