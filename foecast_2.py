@@ -31,11 +31,159 @@ from typing import Dict, Any, List
 
 import numpy as np
 import pandas as pd
+from scipy.optimize import curve_fit
 
 try:
     import streamlit as st  # type: ignore
 except ImportError:
     st = None
+
+# ---------------------------------------------------------------------------
+# Helper functions
+
+def render_dca_and_help() -> None:
+    """
+    Render the Decline Curve Analysis (DCA) and Help & Tutorial sections.
+
+    This helper encapsulates the logic for uploading production data, fitting
+    decline curves, plotting the results, and displaying usage guidance.
+    Calling this function ensures the DCA tools and help text are available
+    wherever it is invoked.
+    """
+    # Decline Curve Analysis section
+    st.header("Decline Curve Analysis")
+    dca_file = st.file_uploader(
+        "Upload CSV for decline curve analysis",
+        type=["csv"],
+        help="The CSV must include a 'date' column and at least one numeric rate column."
+    )
+    if dca_file is not None:
+        try:
+            dca_df = pd.read_csv(dca_file)
+            # Ensure date column exists
+            if "date" not in dca_df.columns:
+                st.error("The uploaded file must include a 'date' column.")
+            else:
+                dca_df["date"] = pd.to_datetime(dca_df["date"])
+                # Select numeric rate columns (exclude date)
+                numeric_cols = [col for col in dca_df.select_dtypes(include=[np.number]).columns if col != "date"]
+                if len(numeric_cols) == 0:
+                    st.error("The uploaded file must include at least one numeric rate column.")
+                else:
+                    rate_col = st.selectbox("Select rate column", options=numeric_cols)
+                    # Optional well ID selection
+                    if "well_id" in dca_df.columns:
+                        well_ids = sorted(dca_df["well_id"].dropna().unique())
+                        selected_id = st.selectbox("Select well ID (if applicable)", options=well_ids)
+                        dca_subset = dca_df[dca_df["well_id"] == selected_id].copy()
+                    else:
+                        dca_subset = dca_df.copy()
+                    # Clean and sort data
+                    dca_subset = dca_subset.dropna(subset=["date", rate_col])
+                    dca_subset = dca_subset.sort_values("date")
+                    if len(dca_subset) < 3:
+                        st.warning("Not enough data points to fit a decline curve.")
+                    else:
+                        # Convert dates to time (years)
+                        t = (dca_subset["date"] - dca_subset["date"].iloc[0]).dt.days / DAYS_PER_MONTH
+                        y = dca_subset[rate_col].to_numpy(dtype=float)
+                        # Decline model selection
+                        model_choice = st.selectbox(
+                            "Select decline model",
+                            options=["Exponential", "Harmonic", "Hyperbolic"],
+                            help="Hyperbolic fits the b‑factor; set b=0 for exponential tail."
+                        )
+                        b_override = None
+                        if model_choice == "Hyperbolic":
+                            b_override = st.number_input(
+                                "Override b‑factor (0 for exponential tail)",
+                                value=0.5,
+                                min_value=0.0,
+                                max_value=2.0,
+                                step=0.05,
+                            )
+                        # Fit model on button click
+                        if st.button("Fit decline model"):
+                            try:
+                                if model_choice == "Exponential":
+                                    popt, _ = curve_fit(
+                                        lambda t_val, qi_val, di_val: qi_val * np.exp(-di_val * t_val),
+                                        t,
+                                        y,
+                                        p0=[max(y), 0.1],
+                                    )
+                                    qi_est, di_est = popt
+                                    y_fit = qi_est * np.exp(-di_est * t)
+                                    st.success(f"Exponential fit: qi={qi_est:.2f}, di={di_est:.4f}")
+                                elif model_choice == "Harmonic":
+                                    popt, _ = curve_fit(
+                                        lambda t_val, qi_val, di_val: qi_val / (1 + di_val * t_val),
+                                        t,
+                                        y,
+                                        p0=[max(y), 0.1],
+                                    )
+                                    qi_est, di_est = popt
+                                    y_fit = qi_est / (1 + di_est * t)
+                                    st.success(f"Harmonic fit: qi={qi_est:.2f}, di={di_est:.4f}")
+                                else:
+                                    # Define hyperbolic decline with b‑factor; b→0 => exponential
+                                    def hyp(t_val, qi_val, di_val, b_val):
+                                        if abs(b_val) < EPS:
+                                            return qi_val * np.exp(-di_val * t_val)
+                                        return qi_val / np.power(1.0 + b_val * di_val * t_val, 1.0 / b_val)
+                                    if b_override is not None and b_override > 0:
+                                        popt, _ = curve_fit(
+                                            lambda t_val, qi_val, di_val: hyp(t_val, qi_val, di_val, b_override),
+                                            t,
+                                            y,
+                                            p0=[max(y), 0.1],
+                                        )
+                                        qi_est, di_est = popt
+                                        y_fit = hyp(t, qi_est, di_est, b_override)
+                                        st.success(
+                                            f"Hyperbolic fit (b={b_override:.2f}): qi={qi_est:.2f}, di={di_est:.4f}"
+                                        )
+                                    else:
+                                        popt, _ = curve_fit(hyp, t, y, p0=[max(y), 0.1, 0.5])
+                                        qi_est, di_est, b_est = popt
+                                        y_fit = hyp(t, qi_est, di_est, b_est)
+                                        st.success(
+                                            f"Hyperbolic fit: qi={qi_est:.2f}, di={di_est:.4f}, b={b_est:.2f}"
+                                        )
+                                # Plot actual vs fitted
+                                plot_df = pd.DataFrame({"Actual": y, "Fitted": y_fit})
+                                plot_df["date"] = dca_subset["date"].values
+                                plot_df = plot_df.set_index("date")
+                                st.line_chart(plot_df)
+                            except Exception as err:
+                                st.error(f"Model fitting failed: {err}")
+        except Exception as err:
+            st.error(f"Failed to read CSV file: {err}")
+    # Help and tutorial text
+    st.header("Help & Tutorial")
+    st.markdown(
+        """
+### Overview
+
+This application consists of two primary tools for assessing oil & gas royalty assets:
+
+**1. DCF Model** – Build a discounted cash flow forecast based on your assumptions about pricing, taxes, and well decline parameters. To use it:
+
+- Use the **Scenario Management** sidebar to create or select scenarios.
+- Edit global assumptions such as start date, forecast horizon, discount rate, pricing, taxes, and post‑production costs.
+- Specify well parameters (initial rates, decline rates, b‑factor, royalty and NRI).
+- Click **Run** to compute monthly cash flows and investment metrics (NPV, IRR, MOIC, payback periods).
+
+**2. Decline Curve Analysis** – Fit empirical decline curves to production data. To use it:
+
+- Upload a CSV containing a **date** column and at least one numeric **rate** column. Optionally include a **well_id** column if multiple wells are present.
+- Select the rate column and well ID (if applicable).
+- Choose a decline model (Exponential, Harmonic, or Hyperbolic).
+- Fit the model to estimate initial rates, decline rates, and b‑factors, and visualize the fit.
+
+These tools are intended to complement each other: you can use DCA to derive decline parameters and then input them into the DCF model. More detailed documentation can be added or linked here.
+        """
+    )
 
 from forecast_model import (
     Well,
@@ -45,6 +193,7 @@ from forecast_model import (
     DAYS_PER_MONTH,
     MAX_INITIAL_DECLINE,
     MAX_TERMINAL_DECLINE,
+    EPS,
 )
 
 # ---------------------------------------------------------------------------
@@ -493,6 +642,147 @@ def render_app() -> None:
         )
         st.markdown("**Cash Flow Over Time**")
         st.line_chart(first["cf"].set_index("date"))
+
+    # When no forecast has been run, provide access to the DCA and help sections.
+    # These are hidden after a run is executed to avoid duplicate content since
+    # the same sections are included in the results display.
+    if not (run_single or run_all):
+        render_dca_and_help()
+
+        # -----------------------------------------------------------------------
+        # Decline Curve Analysis (DCA)
+        #
+        # The DCA section allows you to upload production data and fit common
+        # decline curve models (exponential, harmonic, hyperbolic) to estimate
+        # initial rates, decline rates, and b‑factors. Upload a CSV containing
+        # a 'date' column and at least one numeric rate column. Optionally, a
+        # 'well_id' column may be included to select a specific well's data.
+        #
+        st.header("Decline Curve Analysis")
+        dca_file = st.file_uploader(
+            "Upload CSV for decline curve analysis",
+            type=["csv"],
+            help="The CSV must include a 'date' column and at least one numeric rate column."
+        )
+        if dca_file is not None:
+            try:
+                dca_df = pd.read_csv(dca_file)
+                # Require a date column
+                if "date" not in dca_df.columns:
+                    st.error("The uploaded file must include a 'date' column.")
+                else:
+                    dca_df["date"] = pd.to_datetime(dca_df["date"])
+                    # Determine numeric rate columns
+                    numeric_cols = [col for col in dca_df.select_dtypes(include=[np.number]).columns if col != "date"]
+                    if len(numeric_cols) == 0:
+                        st.error("The uploaded file must include at least one numeric rate column.")
+                    else:
+                        rate_col = st.selectbox("Select rate column", options=numeric_cols)
+                        # If well_id column present, allow selection
+                        if "well_id" in dca_df.columns:
+                            well_ids = sorted(dca_df["well_id"].dropna().unique())
+                            selected_id = st.selectbox("Select well ID (if applicable)", options=well_ids)
+                            dca_subset = dca_df[dca_df["well_id"] == selected_id].copy()
+                        else:
+                            dca_subset = dca_df.copy()
+                        # Drop missing values and sort by date
+                        dca_subset = dca_subset.dropna(subset=["date", rate_col])
+                        dca_subset = dca_subset.sort_values("date")
+                        if len(dca_subset) < 3:
+                            st.warning("Not enough data points to fit a decline curve.")
+                        else:
+                            # Convert dates to time in years (approx months)
+                            t = (dca_subset["date"] - dca_subset["date"].iloc[0]).dt.days / DAYS_PER_MONTH
+                            y = dca_subset[rate_col].to_numpy(dtype=float)
+                            # Select decline model
+                            model_choice = st.selectbox(
+                                "Select decline model",
+                                options=["Exponential", "Harmonic", "Hyperbolic"],
+                                help="Hyperbolic fits the b‑factor; set b=0 for exponential tail."
+                            )
+                            b_override = None
+                            if model_choice == "Hyperbolic":
+                                b_override = st.number_input(
+                                    "Override b‑factor (0 for exponential tail)",
+                                    value=0.5,
+                                    min_value=0.0,
+                                    max_value=2.0,
+                                    step=0.05,
+                                )
+                            if st.button("Fit decline model"):
+                                try:
+                                    if model_choice == "Exponential":
+                                        # qi * exp(-di * t)
+                                        popt, _ = curve_fit(lambda t, qi, di: qi * np.exp(-di * t), t, y, p0=[max(y), 0.1])
+                                        qi_est, di_est = popt
+                                        y_fit = qi_est * np.exp(-di_est * t)
+                                        st.success(f"Exponential fit: qi={qi_est:.2f}, di={di_est:.4f}")
+                                    elif model_choice == "Harmonic":
+                                        # qi / (1 + di * t)
+                                        popt, _ = curve_fit(lambda t, qi, di: qi / (1 + di * t), t, y, p0=[max(y), 0.1])
+                                        qi_est, di_est = popt
+                                        y_fit = qi_est / (1 + di_est * t)
+                                        st.success(f"Harmonic fit: qi={qi_est:.2f}, di={di_est:.4f}")
+                                    else:
+                                        # Hyperbolic: qi / (1 + b*di*t)^(1/b)
+                                        def hyp(t_val, qi_val, di_val, b_val):
+                                            # Treat b≈0 as exponential
+                                            if abs(b_val) < EPS:
+                                                return qi_val * np.exp(-di_val * t_val)
+                                            return qi_val / np.power(1.0 + b_val * di_val * t_val, 1.0 / b_val)
+                                        if b_override is not None and b_override > 0:
+                                            popt, _ = curve_fit(
+                                                lambda t_val, qi_val, di_val: hyp(t_val, qi_val, di_val, b_override),
+                                                t,
+                                                y,
+                                                p0=[max(y), 0.1],
+                                            )
+                                            qi_est, di_est = popt
+                                            y_fit = hyp(t, qi_est, di_est, b_override)
+                                            st.success(f"Hyperbolic fit (b={b_override:.2f}): qi={qi_est:.2f}, di={di_est:.4f}")
+                                        else:
+                                            popt, _ = curve_fit(hyp, t, y, p0=[max(y), 0.1, 0.5])
+                                            qi_est, di_est, b_est = popt
+                                            y_fit = hyp(t, qi_est, di_est, b_est)
+                                            st.success(f"Hyperbolic fit: qi={qi_est:.2f}, di={di_est:.4f}, b={b_est:.2f}")
+                                    # Plot actual vs fitted
+                                    plot_df = pd.DataFrame({"Actual": y, "Fitted": y_fit})
+                                    plot_df["date"] = dca_subset["date"].values
+                                    plot_df = plot_df.set_index("date")
+                                    st.line_chart(plot_df)
+                                except Exception as err:
+                                    st.error(f"Model fitting failed: {err}")
+            except Exception as err:
+                st.error(f"Failed to read CSV file: {err}")
+
+        # -----------------------------------------------------------------------
+        # Help & Tutorial
+        #
+        # Provide guidance on how to use the DCF and DCA functionality. This text
+        # can be expanded or modified to include more details or external links.
+        #
+        st.header("Help & Tutorial")
+        st.markdown("""
+### Overview
+
+This application consists of two primary tools for assessing oil & gas royalty assets:
+
+**1. DCF Model** – Build a discounted cash flow forecast based on your assumptions about pricing, taxes, and well decline parameters. To use it:
+
+- Use the **Scenario Management** sidebar to create or select scenarios.
+- Edit global assumptions such as start date, forecast horizon, discount rate, pricing, taxes, and post‑production costs.
+- Specify well parameters (initial rates, decline rates, b‑factor, royalty and NRI).
+- Click **Run** to compute monthly cash flows and investment metrics (NPV, IRR, MOIC, payback periods).
+
+**2. Decline Curve Analysis** – Fit empirical decline curves to production data. To use it:
+
+- Upload a CSV containing a **date** column and at least one numeric **rate** column. Optionally include a **well_id** column if multiple wells are present.
+- Select the rate column and well ID (if applicable).
+- Choose a decline model (Exponential, Harmonic, or Hyperbolic).
+- Fit the model to estimate initial rates, decline rates, and b‑factors, and visualize the fit.
+
+These tools are intended to complement each other: you can use DCA to derive decline parameters and then input them into the DCF model. More detailed documentation can be added or linked here.
+""")
 
 
 if __name__ == "__main__":
